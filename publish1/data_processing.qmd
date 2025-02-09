@@ -1,0 +1,178 @@
+---
+title: "Data Imputation"
+format: html
+editor: visual
+---
+
+```{r, include=FALSE, echo = TRUE, warning = FALSE, message = FALSE}
+options(repos = c(CRAN = "https://cran.r-project.org"))
+remove(list = ls())
+
+## Installing the required R packages 
+inst.pak <- function(pkg){
+  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+  if (length(new.pkg)) 
+    install.packages(new.pkg, dependencies = TRUE)
+  sapply(pkg, require, character.only = TRUE)
+}
+
+packages <- c("tidyverse", "readxl", "readr", "stringr", "data.table", "here", "utils", "haven","foreign","survey", "srvyr","glmnet", "knitr", "VIM")
+
+inst.pak(packages)
+## downloading data directly from the source. 
+temp <- tempfile()
+download.file("https://meps.ahrq.gov/mepsweb/data_files/pufs/h216/h216dta.zip",temp)
+meps_raw <- read_dta(unzip(temp,"h216.dta"))
+# changing the variables name to lower case 
+names(meps_raw) <- tolower(names(meps_raw))
+#Removing some of survey administration and other variables
+meps_reduced0 <- meps_raw%>%select(-c(duid:pid,panel:begrfm31,endrfm31:rurslt53,dobmm,dobyy,vsaqw19f:varpsu,hieuidx,spouid31:dapid53x,
+                                      hibpdx:foodvl19, wagimp19:othimp19, insurc19:morecovr,verflg31:verflg19,
+                                      trich31x:tricr53x, triat31x:triat53x, mcaid31:mcaid53,mcaid31x:mcaid53x,
+                                      mcare31:mcaid53,mcare31:mcare53, mcare31x:mcare53x,mcdat31x:mcdat53x,govta31:govta53,
+                                      govaat31:govaat53,govtb31:govtb53,govbat31:govbat53,govtc31:govtc53,
+                                      govcat31:govcat53,vaprog31:vaprog53,vaprat31:vaprat53,ihs31:ihsat53,
+                                      pridk31:pridk53,prieu31:prieu53,pring31:prstx53,priv31:priv53,
+                                      privat31:priv53,pub31x:pubat53x,pubat31x:pubat53x,ins31x:ins53x,
+                                      insat31x:insat53x,pmedpy31:pmedpy53, dentin31:dentin53,pmedin31:pmedup53))
+```
+
+## Data
+
+-   I pulled the Medical Expenditure Panel Survey (MEPS) data from <https://meps.ahrq.gov/mepsweb/data_files/pufs/h216/h216dta.zip>
+-   This data set has $28512$ records and $1447$
+-   In this exercise I have used the following variables:
+-   Total personal income (income), total expenditure on healht care (ttlexp), income group (povat19), and gender
+
+## Data Exploration - Health Expenditure vs Health Status
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+meps_reduced0%>%filter(rthlth31%in%c(1:5))%>%
+  mutate(rthlth31=case_when(rthlth31 == 1~'Excellent',rthlth31==2~'Very Good',
+                            rthlth31 == 3~'Good', rthlth31==4~'Fair',
+                            rthlth31 == 5~'Poor'))%>%
+  ggplot(aes(reorder(rthlth31,log(totexp19), FUN=median),log(totexp19),fill=rthlth31))+
+  geom_boxplot()+xlab("Self-reported Health Status")+
+  ylab("Log of Total Health Expenditure")+
+  theme_minimal()+
+  #scale_fill_discrete(name="Health Status")+
+  ggtitle("Distribution of Health Expenditure by Health Status")+
+  theme(legend.position = "none")
+```
+
+## Data Exploration - Health Expenditure vs Income
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+## Income distribution 
+meps_reduced0%>%
+  mutate(povcat19=case_when(povcat19 == 1~'Poor/Negative',povcat19 == 2~'Near Poor',
+                            povcat19 == 3~'Low Income', povcat19 ==4~'Middle Income',
+                            povcat19 == 5~'High Income'))%>%
+  ggplot(aes(reorder(povcat19,log(totexp19), FUN=median),log(totexp19), fill = povcat19))+
+  geom_boxplot()+xlab("Income Category")+
+  ylab("Log of Total Health Expenditure")+
+  ggtitle("Distribution of Health Expenditure by Income Group")+
+  theme_minimal()+
+  theme(legend.position = "none")
+```
+
+## Number of Missing Data Points
+
+```{r, echo = TRUE, warning = FALSE}
+meps_reduced0 <- meps_reduced0%>%
+  mutate(income = ifelse(ttlp19x<=0, NA, ttlp19x), 
+         wage = ifelse(wagep19x==0, NA, wagep19x),
+         ttlexp = ifelse(totexp19<=0, NA,totexp19),
+         gender = ifelse(sex ==1, "Male", "Female"))
+
+to_impute <- meps_reduced0%>%
+  select(ttlexp,income,wage, povcat19, sex, rthlth31)%>%
+  as.data.frame()
+  
+
+to_impute%>%
+  is.na()%>%
+  colSums()
+```
+
+## Visualizing the missingness
+
+```{r, echo = TRUE, message = FALSE, warning = FALSE}
+to_impute%>%
+  aggr(prop = TRUE, numbers = TRUE, cex.axis=.7)
+```
+
+## Imputation Method - Mean
+
+```{r cars, echo = TRUE, warning = FALSE, message = FALSE}
+# Create logical variable 
+missing_data <- to_impute%>%
+  select(ttlexp,income)%>%
+  mutate(ttlexp_imp = ifelse(is.na(ttlexp), TRUE, FALSE))%>%
+  mutate(income_imp = ifelse(is.na(income), TRUE, FALSE))
+       
+# apply mean imputation
+missing_data <- missing_data%>%
+  mutate(ttlexp = ifelse(is.na(ttlexp), mean(ttlexp, na.rm = TRUE), ttlexp),
+         income = ifelse(is.na(income), mean(income, na.rm = TRUE), income))%>%
+  as.data.frame()
+
+# plot the imputed data
+missing_data%>%
+  relocate(income, .after = "ttlexp")%>%
+  marginplot(delimiter = "imp", xlab = "Total Health Expenditure", ylab = "Total Income", main = "Mean Imputation")
+```
+
+## Imputation Method - Median
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+# apply mean imputation
+missing_data <- missing_data%>%
+  mutate(ttlexp = ifelse(is.na(ttlexp), median(ttlexp, na.rm = TRUE), ttlexp),
+         income = ifelse(is.na(income), median(income, na.rm = TRUE), income))%>%
+  as.data.frame()
+
+# plot the imputed data
+missing_data%>%
+  relocate(income, .after = "ttlexp")%>%
+  marginplot(delimiter = "imp",xlab = "Total Health Expenditure", ylab = "Total Income", main = "Median Imputation" )
+```
+
+## Mean and Median Imputation - Discussion
+
+Strengths - The default go-to-method, easy to perform Weakness - Lack of variability in the imputed data - it will lead to underestimation of standard errors
+
+## Imputation Method - Hot Deck
+
+```{r, echo = TRUE, message = FALSE, warning = FALSE}
+meps_imp <- meps_reduced0%>%
+  select(ttlexp, income)
+
+meps_imp <- hotdeck(meps_imp)
+
+meps_imp%>%
+  marginplot(delimiter = "imp", xlab = "Total Health Expenditure", ylab = "Total Income", main = "Hot-Deck Imputation" )
+```
+
+## Imputation Method - KNN
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+meps_knn <- meps_reduced0%>%
+  select(ttlexp,income,wage, povcat19, sex)%>%
+  as.data.frame()
+
+#meps_knn <- meps_knn%>%
+  #kNN(variable = c("ttlexp", "income"),
+    #  k = 5,
+     # numFun = weighted.mean,
+     # weightDist = TRUE)
+
+#meps_knn%>%
+ # select(ttlexp,income, ttlexp_imp, income_imp)%>%
+  #marginplot(delimiter = "imp",xlab = "Total Health Expenditure", ylab = "Total Income", main = "KNN Imputation, with K = 5")
+```
+
+## Conclusions
+
+-   Hot-Deck outperforms other methods and it is fast
+-   KNN does a better job compared to mean and median, but it is annoyingly slow particularly when the optimal value of $K$
